@@ -1,4 +1,5 @@
 # inject libraries
+import sys
 import json
 import numpy as np
 import torch as tr
@@ -29,21 +30,20 @@ label_dict = {
 
 # For Local Run
 # Training Data
-rd_abs_split_tr = pd.read_csv("./training/drugprot_training_splitabs.tsv", sep="\t", header=None)
-rd_ent_tr = pd.read_csv("./training/drugprot_training_entities.tsv", sep="\t", header=None)
-rd_rel_tr = pd.read_csv("./training/drugprot_training_relations.tsv", sep="\t", header=None)
+rd_abs_split_tr = pd.read_csv(f"{sys.argv[1]}/training/drugprot_training_splitabs.tsv", sep="\t", header=None)
+rd_ent_tr = pd.read_csv(f"{sys.argv[1]}/training/drugprot_training_entities.tsv", sep="\t", header=None)
+rd_rel_tr = pd.read_csv(f"{sys.argv[1]}/training/drugprot_training_relations.tsv", sep="\t", header=None)
 
 rd_ent_tr.columns = ["pubMedId", "entityId", "entityType", "sOffset", "eOffset", "entityText"]
 rd_rel_tr.columns = ["pubMedId", "relType", "Arg1", "Arg2"]
 
 # Development Data
-rd_abs_split_dv = pd.read_csv("./development/drugprot_development_splitabs.tsv", sep="\t", header=None)
-rd_ent_dv = pd.read_csv("./development/drugprot_development_entities.tsv", sep="\t", header=None)
-rd_rel_dv = pd.read_csv("./development/drugprot_development_relations.tsv", sep="\t", header=None)
+rd_abs_split_dv = pd.read_csv(f"{sys.argv[1]}/development/drugprot_development_splitabs.tsv", sep="\t", header=None)
+rd_ent_dv = pd.read_csv(f"{sys.argv[1]}/development/drugprot_development_entities.tsv", sep="\t", header=None)
+rd_rel_dv = pd.read_csv(f"{sys.argv[1]}/development/drugprot_development_relations.tsv", sep="\t", header=None)
 
 rd_ent_dv.columns = ["pubMedId", "entityId", "entityType", "sOffset", "eOffset", "entityText"]
 rd_rel_dv.columns = ["pubMedId", "relType", "Arg1", "Arg2"]
-
 
 def unify_abs(dataframe):
     np_matrix = dataframe.to_numpy()
@@ -88,11 +88,8 @@ class BioBertModel(nn.Module):
         output = self.linear(output)
         return output
 
-device = tr.device("cuda" if tr.cuda.is_available() else "cpu")
-
-tokenizer = AutoTokenizer.from_pretrained("dmis-lab/biobert-v1.1")
-
 def preprocess(abstract_sentence_dict, entity_frame, relation_frame):
+    tokenizer = AutoTokenizer.from_pretrained("dmis-lab/biobert-v1.1")
     prepped_list = list()
     sentence_dict = {
         "input": None,
@@ -105,7 +102,6 @@ def preprocess(abstract_sentence_dict, entity_frame, relation_frame):
     for pubMedId in abstract_sentence_dict.keys():
         chem_sentence_id_dict = dict()
         non_chem_sentence_id_dict = dict()
-        sentence_tagged_dict = dict(list())
         entities = entity_frame.loc[entity_frame["pubMedId"] == pubMedId]
         sentence_list = abstract_sentence_dict[pubMedId]
         chem_entities = entities.loc[entities["entityType"] == "CHEMICAL"]
@@ -188,18 +184,23 @@ def preprocess(abstract_sentence_dict, entity_frame, relation_frame):
     return prepped_list
 
 # Hyper-parameter tuned and randomness decreased version. RUN SEPARATELY!
-abstract_sentence_dict = unify_abs(rd_abs_split_tr)
-prepped_sentence_list = preprocess(abstract_sentence_dict, rd_ent_tr, rd_rel_tr)
+abstract_sentence_dict_tr = unify_abs(rd_abs_split_tr)
+prepped_sentence_list_tr = preprocess(abstract_sentence_dict_tr, rd_ent_tr, rd_rel_tr)
+
+abstract_sentence_dict_dv = unify_abs(rd_abs_split_dv)
+prepped_sentence_list_dv = preprocess(abstract_sentence_dict_dv, rd_ent_dv, rd_rel_dv)
 
 rn.seed(2021)
-rn.shuffle(prepped_sentence_list)
+rn.shuffle(prepped_sentence_list_tr)
+rn.shuffle(prepped_sentence_list_dv)
 
-training_size = round(len(prepped_sentence_list)*0.8)
-training_sentences = prepped_sentence_list[:training_size]
-test_sentences = prepped_sentence_list[training_size:]
+device = tr.device("cuda" if tr.cuda.is_available() else "cpu")
 
-BATCH_SIZE = 8
-EPOCHS = 5
+training_sentences = prepped_sentence_list_tr
+test_sentences = prepped_sentence_list_dv
+
+BATCH_SIZE = int(sys.argv[2])
+EPOCHS = int(sys.argv[3])
 
 train_dataset = TensorDataset(
     tr.tensor([sentence["input"] for sentence in training_sentences]).to(device), 
@@ -228,7 +229,7 @@ test_dataloader = DataLoader(
 lr_list = [1e-5, 3e-5, 5e-5]
 wd_list = [1e-2, 3e-2, 5e-2]
 
-fout = open("/content/eval.json", "w")
+fout = open(f"{sys.argv[1]}/eval.json", "w")
 
 for lr in lr_list:
     for wd in wd_list:
@@ -276,5 +277,7 @@ for lr in lr_list:
                           "true_labels": true_labels, 
                           "ps": ps, "rs": rs, "f1s": f1s }, fout)
                 fout.flush()
+            print(f"Iteration {model_instance} with lr: {lr} and wd: {wd}")
 
 fout.close()
+print("Done!")
