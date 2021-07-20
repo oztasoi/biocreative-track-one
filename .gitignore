@@ -2,3 +2,5 @@ final/venv/
 final/model.pt
 competition/venv/
 competition.zip
+competition/*.out
+competition/slurm_*.sh
