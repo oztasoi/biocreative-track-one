@@ -1,13 +1,15 @@
-# inject libraries
 import sys
 import json
 import numpy as np
+
 import torch as tr
 import pandas as pd
 import torch.nn as nn
 
 import random as rn
 from tqdm import trange
+from numba import cuda
+from GPUtil import showUtilization as gpu_usage
 from transformers import AutoTokenizer, AutoModel
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from sklearn.metrics import precision_score, f1_score, recall_score
@@ -24,23 +26,20 @@ label_dict = {
     'DIRECT-REGULATOR': 8,
     'PRODUCT-OF': 9,
     'AGONIST-ACTIVATOR': 10,
-    'AGONIST-INHIBITOR': 11, 
+    'AGONIST-INHIBITOR': 11,
     'SUBSTRATE_PRODUCT-OF': 12
 }
 
-# For Local Run
-# Training Data
-rd_abs_split_tr = pd.read_csv(f"{sys.argv[1]}/training/drugprot_training_splitabs.tsv", sep="\t", header=None)
-rd_ent_tr = pd.read_csv(f"{sys.argv[1]}/training/drugprot_training_entities.tsv", sep="\t", header=None)
-rd_rel_tr = pd.read_csv(f"{sys.argv[1]}/training/drugprot_training_relations.tsv", sep="\t", header=None)
+rd_abs_split_tr = pd.read_csv("~/competition/training/drugprot_training_splitabs.tsv", sep="\t", header=None)
+rd_ent_tr = pd.read_csv("~/competition/training/drugprot_training_entities.tsv", sep="\t", header=None)
+rd_rel_tr = pd.read_csv("~/competition/training/drugprot_training_relations.tsv", sep="\t", header=None)
 
 rd_ent_tr.columns = ["pubMedId", "entityId", "entityType", "sOffset", "eOffset", "entityText"]
 rd_rel_tr.columns = ["pubMedId", "relType", "Arg1", "Arg2"]
 
-# Development Data
-rd_abs_split_dv = pd.read_csv(f"{sys.argv[1]}/development/drugprot_development_splitabs.tsv", sep="\t", header=None)
-rd_ent_dv = pd.read_csv(f"{sys.argv[1]}/development/drugprot_development_entities.tsv", sep="\t", header=None)
-rd_rel_dv = pd.read_csv(f"{sys.argv[1]}/development/drugprot_development_relations.tsv", sep="\t", header=None)
+rd_abs_split_dv = pd.read_csv("~/competition/development/drugprot_development_splitabs.tsv", sep="\t", header=None)
+rd_ent_dv = pd.read_csv("~/competition/development/drugprot_development_entities.tsv", sep="\t", header=None)
+rd_rel_dv = pd.read_csv("~/competition/development/drugprot_development_relations.tsv", sep="\t", header=None)
 
 rd_ent_dv.columns = ["pubMedId", "entityId", "entityType", "sOffset", "eOffset", "entityText"]
 rd_rel_dv.columns = ["pubMedId", "relType", "Arg1", "Arg2"]
@@ -81,7 +80,7 @@ class BioBertModel(nn.Module):
         super(BioBertModel, self).__init__()
         self.model = AutoModel.from_pretrained("dmis-lab/biobert-v1.1")
         self.linear = nn.Linear(768, 13)
-    
+
     def forward(self, tokens, masks=None):
         output = self.model(tokens, attention_mask=masks)[0]
         output = output[:,0,:]
@@ -98,7 +97,7 @@ def preprocess(abstract_sentence_dict, entity_frame, relation_frame):
         "arg1": None,
         "arg2": None
         }
-        
+
     for pubMedId in abstract_sentence_dict.keys():
         chem_sentence_id_dict = dict()
         non_chem_sentence_id_dict = dict()
@@ -112,7 +111,7 @@ def preprocess(abstract_sentence_dict, entity_frame, relation_frame):
             entityId = chem_entities.iloc[chem_ix]["entityId"]
             sentence_count = find_sentence_index(sOffset, sentence_list)
             chem_sentence_id_dict[entityId] = {
-                "sOffset": chem_entities.iloc[chem_ix]["sOffset"], 
+                "sOffset": chem_entities.iloc[chem_ix]["sOffset"],
                 "eOffset": chem_entities.iloc[chem_ix]["eOffset"],
                 "sen_ct": sentence_count
                 }
@@ -122,8 +121,8 @@ def preprocess(abstract_sentence_dict, entity_frame, relation_frame):
             entityId = non_chem_entities.iloc[nonchem_ix]["entityId"]
             sentence_count = find_sentence_index(sOffset, sentence_list)
             non_chem_sentence_id_dict[entityId] = {
-                "sOffset": non_chem_entities.iloc[nonchem_ix]["sOffset"], 
-                "eOffset": non_chem_entities.iloc[nonchem_ix]["eOffset"], 
+                "sOffset": non_chem_entities.iloc[nonchem_ix]["sOffset"],
+                "eOffset": non_chem_entities.iloc[nonchem_ix]["eOffset"],
                 "sen_ct": sentence_count
                 }
 
@@ -183,12 +182,24 @@ def preprocess(abstract_sentence_dict, entity_frame, relation_frame):
 
     return prepped_list
 
-# Hyper-parameter tuned and randomness decreased version. RUN SEPARATELY!
+def free_gpu_cache():
+    print("Initial GPU Usage")
+    gpu_usage()
+
+    tr.cuda.empty_cache()
+
+    print("GPU Usage after emptying the cache")
+    gpu_usage()
+
+print("Training data extraction started.")
 abstract_sentence_dict_tr = unify_abs(rd_abs_split_tr)
 prepped_sentence_list_tr = preprocess(abstract_sentence_dict_tr, rd_ent_tr, rd_rel_tr)
+print("Training data extraction completed.")
 
+print("Test data extraction started.")
 abstract_sentence_dict_dv = unify_abs(rd_abs_split_dv)
 prepped_sentence_list_dv = preprocess(abstract_sentence_dict_dv, rd_ent_dv, rd_rel_dv)
+print("Test data extraction completed.")
 
 rn.seed(2021)
 rn.shuffle(prepped_sentence_list_tr)
@@ -199,45 +210,47 @@ device = tr.device("cuda" if tr.cuda.is_available() else "cpu")
 training_sentences = prepped_sentence_list_tr
 test_sentences = prepped_sentence_list_dv
 
-BATCH_SIZE = int(sys.argv[2])
-EPOCHS = int(sys.argv[3])
+BATCH_SIZE = 8
+EPOCHS = 5
 
 train_dataset = TensorDataset(
-    tr.tensor([sentence["input"] for sentence in training_sentences]).to(device), 
-    tr.tensor([sentence["mask"] for sentence in training_sentences]).to(device), 
+    tr.tensor([sentence["input"] for sentence in training_sentences]).to(device),
+    tr.tensor([sentence["mask"] for sentence in training_sentences]).to(device),
     tr.tensor([sentence["label"] for sentence in training_sentences]).to(device)
     )
 train_sampler = RandomSampler(train_dataset)
 train_dataloader = DataLoader(
-    train_dataset, 
-    sampler=train_sampler, 
+    train_dataset,
+    sampler=train_sampler,
     batch_size=BATCH_SIZE
     )
 
 test_dataset = TensorDataset(
-    tr.tensor([sentence["input"] for sentence in test_sentences]).to(device), 
-    tr.tensor([sentence["mask"] for sentence in test_sentences]).to(device), 
+    tr.tensor([sentence["input"] for sentence in test_sentences]).to(device),
+    tr.tensor([sentence["mask"] for sentence in test_sentences]).to(device),
     tr.tensor([sentence["label"] for sentence in test_sentences]).to(device)
     )
 test_sampler = SequentialSampler(test_dataset)
 test_dataloader = DataLoader(
-    test_dataset, 
-    sampler=test_sampler, 
+    test_dataset,
+    sampler=test_sampler,
     batch_size=BATCH_SIZE
     )
+
+print("Training & Test data sets are created.")
 
 lr_list = [1e-5, 3e-5, 5e-5]
 wd_list = [1e-2, 3e-2, 5e-2]
 
-fout = open(f"{sys.argv[1]}/eval.json", "w")
+fout = open("./eval.json", "w")
 
 for lr in lr_list:
     for wd in wd_list:
-        for model_instance in range(10): # to overcome randomness, we've run the model 10 times and get the avg score
+        for model_instance in range(10):
+            free_gpu_cache()
             bioBERT_model = BioBertModel()
             bioBERT_model = bioBERT_model.to(device)
             optimizer = tr.optim.Adam(params=bioBERT_model.parameters(), lr=lr, weight_decay=wd)
-            tr.cuda.empty_cache()
 
             bioBERT_model.train()
             loss_func = nn.CrossEntropyLoss()
@@ -272,12 +285,13 @@ for lr in lr_list:
                 rs = recall_score(true_labels, all_predicted, average="micro")
                 f1s = f1_score(true_labels, all_predicted, average="micro")
 
-                json.dump({ "lr": lr, "wd": wd, "model_instance": model_instance, 
-                          "all_predicted": all_predicted, 
-                          "true_labels": true_labels, 
+                json.dump({ "lr": lr, "wd": wd, "model_instance": model_instance,
+                          "all_predicted": all_predicted,
+                          "true_labels": true_labels,
                           "ps": ps, "rs": rs, "f1s": f1s }, fout)
                 fout.flush()
             print(f"Iteration {model_instance} with lr: {lr} and wd: {wd}")
+            free_gpu_cache()
 
 fout.close()
 print("Done!")
