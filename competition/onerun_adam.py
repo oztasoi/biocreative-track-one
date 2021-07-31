@@ -211,7 +211,7 @@ device = tr.device("cuda" if tr.cuda.is_available() else "cpu")
 training_sentences = prepped_sentence_list_tr
 test_sentences = prepped_sentence_list_dv
 
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 EPOCHS = 5
 
 train_dataset = TensorDataset(
@@ -240,61 +240,56 @@ test_dataloader = DataLoader(
 
 print("Training & Test data sets are created.")
 
-lr_list = [1e-5, 3e-5, 5e-5]
-wd_list = [1e-2, 3e-2, 5e-2]
+lr = 1e-5
+wd = 1e-2
 
 fout = open("./eval.json", "w")
 results = list()
 
-for lr in lr_list:
-    for wd in wd_list:
-        for model_instance in range(10):
-            free_gpu_cache()
-            bioBERT_model = BioBertModel()
-            bioBERT_model = bioBERT_model.to(device)
-            optimizer = tr.optim.Adam(params=bioBERT_model.parameters(), lr=lr, weight_decay=wd)
+free_gpu_cache()
+bioBERT_model = BioBertModel()
+bioBERT_model = bioBERT_model.to(device)
+optimizer = tr.optim.Adam(params=bioBERT_model.parameters(), lr=lr, weight_decay=wd)
 
-            bioBERT_model.train()
-            loss_func = nn.CrossEntropyLoss()
-            for epoch_num in trange(EPOCHS, desc="Epoch"):
-                train_loss = 0.0
-                for step_num, batch_data in enumerate(train_dataloader):
-                    inputs, masks, labels = batch_data
-                    outputs = bioBERT_model.forward(inputs, masks)
-                    batch_loss = loss_func(outputs, labels)
-                    train_loss += batch_loss.item()
+bioBERT_model.train()
+loss_func = nn.CrossEntropyLoss()
+for epoch_num in trange(EPOCHS, desc="Epoch"):
+    train_loss = 0.0
+    for step_num, batch_data in enumerate(train_dataloader):
+        inputs, masks, labels = batch_data
+        outputs = bioBERT_model.forward(inputs, masks)
+        batch_loss = loss_func(outputs, labels)
+        train_loss += batch_loss.item()
 
-                    batch_loss.backward()
+        batch_loss.backward()
 
-                    optimizer.step()
-                    optimizer.zero_grad()
+        optimizer.step()
+        optimizer.zero_grad()
 
-            bioBERT_model.eval()
-            all_predicted = []
-            true_labels = []
-            with tr.no_grad():
-                for step_num, batch_data in enumerate(test_dataloader):
+bioBERT_model.eval()
+all_predicted = []
+true_labels = []
+with tr.no_grad():
+    for step_num, batch_data in enumerate(test_dataloader):
 
-                    inputs, masks, labels = batch_data
-                    outputs = bioBERT_model.forward(inputs, masks)
-                    _, predicted = tr.max(outputs.data, 1)
-                    predicted = predicted.tolist()
+        inputs, masks, labels = batch_data
+        outputs = bioBERT_model.forward(inputs, masks)
+        _, predicted = tr.max(outputs.data, 1)
+        predicted = predicted.tolist()
 
-                    all_predicted += predicted
-                    true_labels += labels.tolist()
+        all_predicted += predicted
+        true_labels += labels.tolist()
 
-                ps = precision_score(true_labels, all_predicted, average="micro")
-                rs = recall_score(true_labels, all_predicted, average="micro")
-                f1s = f1_score(true_labels, all_predicted, average="micro")
+    ps = precision_score(true_labels, all_predicted, average="micro")
+    rs = recall_score(true_labels, all_predicted, average="micro")
+    f1s = f1_score(true_labels, all_predicted, average="micro")
 
-                results.append({ "lr": lr, "wd": wd, "model_instance": model_instance,
-                          "all_predicted": all_predicted,
-                          "true_labels": true_labels,
-                          "ps": ps, "rs": rs, "f1s": f1s })
-            print(f"Iteration {model_instance} with lr: {lr} and wd: {wd}")
-            free_gpu_cache()
+    results.append({ "lr": lr, "wd": wd,
+                "all_predicted": all_predicted,
+                "true_labels": true_labels,
+                "ps": ps, "rs": rs, "f1s": f1s })
 
+free_gpu_cache()
 json.dump(results, fout)
 fout.flush()
 fout.close()
-print("Done!")
