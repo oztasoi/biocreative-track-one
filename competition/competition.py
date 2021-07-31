@@ -243,6 +243,7 @@ lr_list = [1e-5, 3e-5, 5e-5]
 wd_list = [1e-2, 3e-2, 5e-2]
 
 fout = open("./eval.json", "w")
+results = list()
 
 for lr in lr_list:
     for wd in wd_list:
@@ -285,13 +286,14 @@ for lr in lr_list:
                 rs = recall_score(true_labels, all_predicted, average="micro")
                 f1s = f1_score(true_labels, all_predicted, average="micro")
 
-                json.dump({ "lr": lr, "wd": wd, "model_instance": model_instance,
+                results.append({ "lr": lr, "wd": wd, "model_instance": model_instance,
                           "all_predicted": all_predicted,
                           "true_labels": true_labels,
-                          "ps": ps, "rs": rs, "f1s": f1s }, fout)
-                fout.flush()
+                          "ps": ps, "rs": rs, "f1s": f1s })
             print(f"Iteration {model_instance} with lr: {lr} and wd: {wd}")
             free_gpu_cache()
 
+json.dump(results, fout)
+fout.flush()
 fout.close()
 print("Done!")
